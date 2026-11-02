@@ -66,6 +66,8 @@ enabled = true
 smtp_host = "smtp.gmail.com"
 smtp_port = 587
 to = ["you@example.com"]        # who receives URGENT emails and the daily digest
+                                # (the EMAIL_TO secret overrides this, so your address can stay
+                                #  out of this file, which is public on GitHub)
 digest_size = 15                # deals in the daily digest
 
 [notifications.whatsapp]
@@ -73,14 +75,15 @@ digest_size = 15                # deals in the daily digest
 # TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN go in .env.
 enabled = false
 from_number = "whatsapp:+14155238886"   # Twilio sandbox number
-to_number = "whatsapp:+27XXXXXXXXX"     # your number, in international format
+to_number = "whatsapp:+27XXXXXXXXX"     # your number, in international format (or the WHATSAPP_TO secret)
 tiers = ["HOT", "URGENT"]
 
 [schedule]
-# Used by `python main.py run`, which Task Scheduler starts every 5 minutes.
+# Used by `python main.py run`, which runs every 5 minutes (Task Scheduler or GitHub Actions).
 digest_time = "08:00"            # SAST; the digest goes out with the first full run after this
 failure_alert_after = 3          # push an alert after this many failed runs in a row
-keep_fast_snapshots_days = 2     # older fast-check rows are deleted (full runs are kept forever)
+heartbeat = true                 # daily "still running" push, so silence means something's wrong
+heartbeat_time = "08:00"         # SAST; sent with the first successful run after this
 
 [paths]
 data_dir = "data"

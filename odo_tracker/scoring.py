@@ -12,6 +12,8 @@ Suspicious deals are flagged, never hidden, so you can judge them yourself.
 import sqlite3
 from statistics import median
 
+from . import storage
+
 # Flags that mean "don't trust this discount".
 TRUST_FLAGS = {"no_was_price", "free_without_was_price", "price_not_below_was",
                "was_price_jumped", "was_price_far_above_seen_prices"}
@@ -81,7 +83,7 @@ def rank(deals: list[dict]) -> list[dict]:
 
 def score_run(conn: sqlite3.Connection, run_id: int, cfg: dict) -> list[dict]:
     """Score every product in one stored run, using earlier runs as each item's history."""
-    products = [dict(row) for row in conn.execute("SELECT * FROM snapshots WHERE run_id = ?", (run_id,))]
+    products = [dict(row) for row in storage.products_in_run(conn, run_id)]
     history = load_history(conn, before_run_id=run_id)
     scored = [score(p, history.get(_key(p)), cfg) for p in products if p["price"] is not None]
     return rank(scored)
@@ -91,8 +93,8 @@ def load_history(conn: sqlite3.Connection, before_run_id: int) -> dict:
     """Map (brand, name) -> {"prices": [...], "was_prices": [...]} from runs before before_run_id.
 
     We match items by brand + name rather than product_id, because ODO can relist the same item
-    on a later day as a new listing with a new id. DISTINCT keeps the query small: an item seen
-    at the same price in 300 runs contributes one row.
+    on a later day as a new listing with a new id. Snapshots only hold one row per version of
+    an item, and DISTINCT merges identical versions of relisted items.
     """
     history = {}
     rows = conn.execute("""SELECT DISTINCT brand, name, price, was_price FROM snapshots

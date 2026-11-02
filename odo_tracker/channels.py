@@ -38,10 +38,15 @@ def send_ntfy(cfg: dict, title: str, message: str, url: str | None = None,
 
 
 def send_email(cfg: dict, subject: str, text: str, html: str | None = None):
-    """Send an email through SMTP (Gmail by default) to everyone in config [notifications.email].to."""
+    """Send an email through SMTP (Gmail by default).
+
+    Recipients: the EMAIL_TO secret (comma-separated) if set, else config [notifications.email].to.
+    The secret exists so your address doesn't have to sit in config.toml in a public repo.
+    """
     user, password = _secret("SMTP_USER"), _secret("SMTP_PASSWORD")
+    to = os.environ.get("EMAIL_TO", "").strip() or ", ".join(cfg["to"])
     msg = EmailMessage()
-    msg["Subject"], msg["From"], msg["To"] = subject, user, ", ".join(cfg["to"])
+    msg["Subject"], msg["From"], msg["To"] = subject, user, to
     msg.set_content(text)                       # plain-text version for simple mail apps
     if html:
         msg.add_alternative(html, subtype="html")  # nicer version with a table
@@ -52,11 +57,15 @@ def send_email(cfg: dict, subject: str, text: str, html: str | None = None):
 
 
 def send_whatsapp(cfg: dict, text: str):
-    """WhatsApp message via Twilio's REST API (plain requests, no Twilio package needed)."""
+    """WhatsApp message via Twilio's REST API (plain requests, no Twilio package needed).
+
+    Your number comes from the WHATSAPP_TO secret if set, else config [notifications.whatsapp].to_number.
+    """
     sid, token = _secret("TWILIO_ACCOUNT_SID"), _secret("TWILIO_AUTH_TOKEN")
+    to = os.environ.get("WHATSAPP_TO", "").strip() or cfg["to_number"]
     resp = requests.post(
         f"https://api.twilio.com/2010-04-01/Accounts/{sid}/Messages.json",
-        data={"From": cfg["from_number"], "To": cfg["to_number"], "Body": text},
+        data={"From": cfg["from_number"], "To": to, "Body": text},
         auth=(sid, token), timeout=15,
     )
     resp.raise_for_status()

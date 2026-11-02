@@ -1,0 +1,157 @@
+# The deal tracker, running on GitHub's servers instead of your laptop.
+#
+# Every trigger runs the same `python main.py run` as the laptop task. It decides itself
+# whether a full run is due (30 min since the last one) or a fast check, and skips the run
+# if the site was asked less than 5 minutes ago. So when the */5 and */30 schedules both
+# fire at :00 and :30, the second one just skips.
+#
+# Where things are kept between runs (each run starts on a fresh, empty machine):
+#   database + run_state.json  -> the PRIVATE repo odo-deal-tracker-data, pushed only when a
+#                                 run found something new (a change or an alert)
+#   run_state.json (newest)    -> GitHub's cache, saved after every run. It holds small things
+#                                 that change every run: run times, failure count, heartbeat counts.
+#
+# Secrets (Settings -> Secrets and variables -> Actions):
+#   DATA_REPO_TOKEN  fine-grained token with Contents: read & write on the data repo only
+#   NTFY_TOPIC       your ntfy topic
+#   SMTP_USER, SMTP_PASSWORD, EMAIL_TO          optional: email
+#   TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, WHATSAPP_TO   optional: WhatsApp
+#
+# GitHub's schedule is best-effort: runs often start 5-15 minutes late, and some are dropped
+# when GitHub is busy (especially around the start of each hour).
+
+name: Tracker
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"    # URGENT check (a full run instead, when one is due)
+    - cron: "*/30 * * * *"   # full run
+    - cron: "17 6 * * 1"     # Mondays 08:17 SAST: keepalive (see the last job)
+  workflow_dispatch:
+    inputs:
+      action:
+        description: What to do
+        type: choice
+        default: run
+        options: [run, test-notify, resume, keepalive]
+
+permissions:
+  contents: read
+
+env:
+  DATA_REPO: ${{ github.repository_owner }}/odo-deal-tracker-data
+
+jobs:
+  track:
+    if: github.event.schedule != '17 6 * * 1' && inputs.action != 'keepalive'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Never run two at once; a run that's triggered meanwhile waits its turn.
+    concurrency:
+      group: tracker
+      cancel-in-progress: false
+    env:
+      TZ: Africa/Johannesburg   # only affects timestamps in the log
+      ODO_CHANGED_FLAG: ${{ github.workspace }}/data/needs_commit
+      NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+      SMTP_USER: ${{ secrets.SMTP_USER }}
+      SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+      EMAIL_TO: ${{ secrets.EMAIL_TO }}
+      TWILIO_ACCOUNT_SID: ${{ secrets.TWILIO_ACCOUNT_SID }}
+      TWILIO_AUTH_TOKEN: ${{ secrets.TWILIO_AUTH_TOKEN }}
+      WHATSAPP_TO: ${{ secrets.WHATSAPP_TO }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip            # reuse downloaded packages between runs
+
+      - run: pip install -r requirements.txt
+
+      - name: Get the database from the private data repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.DATA_REPO }}
+          token: ${{ secrets.DATA_REPO_TOKEN }}
+          path: data
+
+      - name: Get the newest run state from the cache
+        uses: actions/cache/restore@v4
+        with:
+          path: data/run_state.json
+          key: run-state-${{ github.run_id }}
+          restore-keys: run-state-
+
+      - name: Resume after a pause
+        if: inputs.action == 'resume'
+        run: python main.py resume && touch "$ODO_CHANGED_FLAG"
+
+      - name: Send test alerts
+        if: inputs.action == 'test-notify'
+        run: python main.py test-notify
+
+      - name: Run the tracker
+        id: tracker
+        if: github.event_name == 'schedule' || inputs.action == 'run' || inputs.action == 'resume'
+        run: python main.py run
+
+      # If an earlier step broke (GitHub hiccup, pip install failed...), the tracker never ran,
+      # so it couldn't count the failure itself. This counts it, and pushes after 3 in a row.
+      - name: Count a failure outside the tracker
+        if: failure() && steps.tracker.outcome != 'failure'
+        run: python3 scripts/infra_failure.py
+
+      - name: Save the run state to the cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: data/run_state.json
+          key: run-state-${{ github.run_id }}
+
+      - name: Save the database (only if the run found something new)
+        if: always() && hashFiles('data/needs_commit') != ''
+        working-directory: data
+        run: |
+          rm needs_commit
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # Keep the data repo at a single commit: replace it instead of stacking copies of
+          # the database file in the history. The database itself holds the price history.
+          git checkout --orphan latest
+          git add -A
+          git commit -q -m "Data as of $(date -u +%Y-%m-%dT%H:%MZ)"
+          git push -q --force origin latest:main
+          echo "Database saved ($(du -h odo_deals.db | cut -f1))"
+
+  # GitHub disables scheduled workflows in public repos after 60 days without "repository
+  # activity", and its docs don't say whether this workflow's own actions count. Two cheap
+  # safeguards, weekly: (1) if nobody has committed to this repo for 40+ days, commit a dated
+  # file; (2) call the "enable workflow" API. The daily heartbeat push is the real safety net:
+  # if it stops arriving, check the Actions tab. Fix: gh workflow enable tracker.yml
+  keepalive:
+    if: github.event.schedule == '17 6 * * 1' || inputs.action == 'keepalive'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      actions: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Commit a dated file if the repo has been quiet for 40+ days
+        run: |
+          age_days=$(( ( $(date +%s) - $(git log -1 --format=%ct) ) / 86400 ))
+          echo "Last commit was $age_days days ago"
+          if [ "$age_days" -ge 40 ]; then
+            date -u +%Y-%m-%d > .github/keepalive.txt
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add .github/keepalive.txt
+            git commit -m "Keepalive: $(date -u +%Y-%m-%d)"
+            git push
+          fi
+      - name: Re-enable the workflow
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api -X PUT "repos/${{ github.repository }}/actions/workflows/tracker.yml/enable"

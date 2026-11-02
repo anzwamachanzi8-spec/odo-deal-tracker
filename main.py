@@ -12,10 +12,12 @@ Usage (from the odo-deal-tracker folder, with the virtual environment active):
 """
 
 import argparse
+import os
 import sys
 import traceback
 from contextlib import closing
 from datetime import datetime, timezone
+from pathlib import Path
 
 from odo_tracker import scoring, storage
 from odo_tracker import state as run_state
@@ -95,6 +97,7 @@ def run_fetch(config: dict, mode: str, verbose: bool):
         print(f"Missing was-price:     {sum(p['was_price'] is None for p in products)}")
 
     with _db(config) as conn:
+        counts_before = storage.content_counts(conn)
         summary = storage.save_run(conn, mode, products, started_at)
         deals = scoring.score_run(conn, summary["run_id"], config["scoring"])
         if verbose:
@@ -106,6 +109,9 @@ def run_fetch(config: dict, mode: str, verbose: bool):
         show_tier_counts(deals)
         sent = Notifier(config).alert_new_deals(conn, deals, confirm=lambda url: check_product_page(client, url))
         print(f"Alerts: URGENT sent {sent['URGENT']}, HOT sent {sent['HOT']}, skipped {sent['skipped']}")
+        # New product versions, changes or alerts = data worth saving (used by the cloud version).
+        data_changed = storage.content_counts(conn) != counts_before
+    return {"alerts": sent["URGENT"] + sent["HOT"], "data_changed": data_changed}
 
 
 def cmd_fetch(args):
@@ -136,14 +142,9 @@ def cmd_run(args):
     mode = "full" if full_run_due(config) else "fast"
     print(f"=== {mode} run ===")
     try:
-        run_fetch(config, mode, verbose=False)
+        result = run_fetch(config, mode, verbose=False)
         if mode == "full":
             send_digest_if_due(config, notifier)
-            with _db(config) as conn:
-                pruned = storage.prune_fast_runs(conn, config["schedule"]["keep_fast_snapshots_days"],
-                                                 datetime.now(timezone.utc).isoformat(timespec="seconds"))
-            if pruned:
-                print(f"Pruned {pruned} old fast-check runs")
     except TooSoonError as err:
         print(err)  # respecting the rate limit is not a failure
         return
@@ -152,14 +153,28 @@ def cmd_run(args):
         _update_state(config, paused_reason=str(err), paused_at=_now())
         notifier.push("ODO tracker PAUSED: site blocked us",
                       f"{err}\nThe tracker has stopped making requests. Check the site in a browser, "
-                      f"then run: python main.py resume", priority=4, tags=["no_entry"])
+                      f"then resume it (see README).", priority=4, tags=["no_entry"])
         print(f"BLOCKED: {err}. Tracker paused.")
+        _mark_data_changed()  # save the pause, so it survives in the cloud
         sys.exit(2)
     except Exception as err:
         _record_failure(config, notifier, err)
         sys.exit(1)
     else:
-        _record_success(config, notifier)
+        _record_success(config, notifier, result["alerts"])
+        if result["data_changed"]:
+            _mark_data_changed()
+        send_heartbeat_if_due(config, notifier)
+
+
+def _mark_data_changed():
+    """Tell the GitHub Actions workflow to save the database (it sets ODO_CHANGED_FLAG to a file path).
+
+    Does nothing on the laptop, where the database file is simply kept on disk.
+    """
+    flag = os.environ.get("ODO_CHANGED_FLAG")
+    if flag:
+        Path(flag).touch()
 
 
 def _now() -> str:
@@ -176,21 +191,51 @@ def _update_state(config, **changes) -> dict:
 
 def _record_failure(config, notifier, err):
     print("RUN FAILED:\n" + traceback.format_exc())
-    failures = run_state.load(config).get("consecutive_failures", 0) + 1
-    _update_state(config, consecutive_failures=failures, last_error=f"{type(err).__name__}: {err}")
+    state = run_state.load(config)
+    failures = state.get("consecutive_failures", 0) + 1
+    _update_state(config, consecutive_failures=failures, last_error=f"{type(err).__name__}: {err}",
+                  hb_failed=state.get("hb_failed", 0) + 1)
     threshold = config["schedule"]["failure_alert_after"]
     if failures == threshold:  # alert once, not on every failure after that
         notifier.push(f"ODO tracker: {failures} failed runs in a row",
-                      f"Last error: {type(err).__name__}: {err}\nSee logs/tracker.log",
-                      priority=4, tags=["warning"])
+                      f"Last error: {type(err).__name__}: {err}\nSee the log (logs/tracker.log, "
+                      f"or the run's log on GitHub)", priority=4, tags=["warning"])
 
 
-def _record_success(config, notifier):
-    failures = run_state.load(config).get("consecutive_failures", 0)
+def _record_success(config, notifier, alerts_sent: int):
+    state = run_state.load(config)
+    failures = state.get("consecutive_failures", 0)
     if failures >= config["schedule"]["failure_alert_after"]:
         notifier.push("ODO tracker recovered", f"Working again after {failures} failed runs.", tags=["white_check_mark"])
-    if failures:
-        _update_state(config, consecutive_failures=0)
+    # Counters for the daily heartbeat.
+    _update_state(config, consecutive_failures=0, hb_runs=state.get("hb_runs", 0) + 1,
+                  hb_alerts=state.get("hb_alerts", 0) + alerts_sent)
+
+
+# --- heartbeat --------------------------------------------------------------------------
+
+def send_heartbeat_if_due(config, notifier) -> None:
+    """Once a day after [schedule].heartbeat_time (SAST), push a short "still running" note.
+
+    Most days nothing alert-worthy happens, so a quiet phone can't tell you the tracker is alive.
+    If this push doesn't arrive, something is wrong (laptop asleep, GitHub disabled the workflow...).
+    """
+    sched = config["schedule"]
+    now = datetime.now(SAST)
+    today = now.date().isoformat()
+    state = run_state.load(config)
+    if not sched.get("heartbeat", True) or state.get("last_heartbeat_date") == today:
+        return
+    if now.strftime("%H:%M") < sched["heartbeat_time"]:
+        return
+    since = state.get("hb_since")
+    period = f"since {since}" if since else "since the tracker started"
+    text = (f"{state.get('hb_runs', 0)} successful runs, {state.get('hb_failed', 0)} failed, "
+            f"{state.get('hb_alerts', 0)} deal alerts {period}.")
+    if notifier.push("ODO tracker is running", text, priority=2, tags=["heartbeat"]):
+        print(f"Heartbeat sent: {text}")
+        _update_state(config, last_heartbeat_date=today, hb_runs=0, hb_failed=0, hb_alerts=0,
+                      hb_since=now.strftime("%a %H:%M"))
 
 
 # --- digest -----------------------------------------------------------------------------

@@ -3,7 +3,10 @@
 Run from the project folder:  python -m unittest discover tests
 """
 
+import sqlite3
+import tempfile
 import unittest
+from pathlib import Path
 
 from odo_tracker import storage
 
@@ -51,14 +54,42 @@ class StorageTests(unittest.TestCase):
         summary = storage.save_run(self.conn, "fast", [product(1, 500)], "t2")
         self.assertTrue(summary["first_run"])
 
-    def test_snapshots_are_appended_not_overwritten(self):
+    def test_only_changed_versions_are_saved_but_history_is_complete(self):
         for price in (500, 500, 400, 500):
             storage.save_run(self.conn, "full", [product(1, price)], "t")
         count = self.conn.execute("SELECT COUNT(*) FROM snapshots WHERE product_id = 1").fetchone()[0]
-        self.assertEqual(count, 4)
+        self.assertEqual(count, 3)  # the second R500 run repeated the first, so it added no row
         # Same price twice in a row = one period; going back to R500 later = a new period.
         periods = storage.price_history(self.conn, 1)
         self.assertEqual([(p["price"], p["times_seen"]) for p in periods], [(500, 2), (400, 1), (500, 1)])
+
+    def test_products_in_run_rebuilds_each_run_exactly(self):
+        runs = [[product(1, 500), product(2, 300)],
+                [product(1, 450)],                            # 2 gone, 1 cheaper
+                [product(1, 450), product(2, 300), product(3, 99)],
+                [product(2, 250, name="Item 2 (renamed)")]]
+        ids = [storage.save_run(self.conn, "full", r, "t")["run_id"] for r in runs]
+        storage.save_run(self.conn, "fast", [product(1, 450)], "t")  # other mode doesn't interfere
+        for run_id, expected in zip(ids, runs):
+            got = {r["product_id"]: (r["price"], r["name"]) for r in storage.products_in_run(self.conn, run_id)}
+            self.assertEqual(got, {p["product_id"]: (p["price"], p["name"]) for p in expected})
+
+    def test_unchanged_run_adds_no_data_rows(self):
+        storage.save_run(self.conn, "full", [product(1, 500), product(2, 300)], "t1")
+        before = storage.content_counts(self.conn)
+        summary = storage.save_run(self.conn, "full", [product(1, 500), product(2, 300)], "t2")
+        self.assertEqual(summary["new_versions"], 0)
+        self.assertEqual(storage.content_counts(self.conn), before)
+
+    def test_old_format_database_is_refused(self):
+        path = Path(tempfile.mkdtemp()) / "old.db"
+        old = sqlite3.connect(path)
+        old.execute("CREATE TABLE runs (run_id INTEGER PRIMARY KEY, started_at TEXT, mode TEXT, item_count INTEGER)")
+        old.execute("INSERT INTO runs VALUES (1, 't', 'full', 0)")
+        old.commit()
+        old.close()
+        with self.assertRaises(storage.OldDatabaseFormat):
+            storage.connect(path)
 
 
 if __name__ == "__main__":
