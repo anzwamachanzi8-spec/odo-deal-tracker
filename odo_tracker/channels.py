@@ -18,7 +18,7 @@ class NotConfigured(Exception):
 def _secret(name: str) -> str:
     value = os.environ.get(name, "").strip()
     if not value:
-        raise NotConfigured(f"{name} is not set in .env")
+        raise NotConfigured(f"{name} is not set (in .env, or as a GitHub secret in the cloud)")
     return value
 
 
