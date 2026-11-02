@@ -1,0 +1,27 @@
+# Phase 7 step 1: a one-off, manually started test that checks whether OneDayOnly can be
+# reached from a GitHub Actions runner. Start it from the Actions tab ("Run workflow") or
+# with:  gh workflow run reachability-test.yml
+# It makes 2 requests and touches nothing else. Delete this file once the real tracker runs.
+
+name: Reachability test
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - name: Runner's public IP (to see which network the site saw)
+        run: curl -s https://api.ipify.org; echo
+      - name: Try the site
+        run: python scripts/reachability_test.py

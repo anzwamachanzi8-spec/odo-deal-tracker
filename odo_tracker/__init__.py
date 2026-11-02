@@ -1,0 +1,1 @@
+"""OneDayOnly deal tracker."""

@@ -1,0 +1,11 @@
+# Secrets: never commit
+.env
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Local data and logs (Phase 7 decides how the database is stored in the cloud)
+data/
+logs/

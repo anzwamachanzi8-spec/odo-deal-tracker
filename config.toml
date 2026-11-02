@@ -1,0 +1,88 @@
+# OneDayOnly deal tracker settings.
+# TOML is used because Python 3.11+ reads it with the built-in `tomllib` (no extra package).
+# Secrets (passwords, tokens) do NOT go here; they go in .env.
+
+[site]
+base_url = "https://www.onedayonly.co.za"
+
+# Pages fetched by the full run. "path" is the page on the site; "section" is the label we store.
+# The homepage ("/") is always fetched first: it holds today's deals.
+# Category pages are skipped on purpose: they only repeat today's deals.
+full_run_pages = [
+    { path = "/shops/extra-time-deals",    section = "Extra Time" },
+    { path = "/clearance-sale",            section = "Clearance" },
+    { path = "/shops/everyday-essentials", section = "Everyday Essentials" },
+    # { path = "/black-friday",            section = "Black Friday" },  # uncomment when it goes live
+]
+
+[politeness]
+# Identify the tracker honestly. You can add a contact email in the brackets if you like.
+user_agent = "odo-deal-tracker/0.1 (personal price tracker for a student project)"
+delay_min_seconds = 2.0      # random pause between requests within one run
+delay_max_seconds = 3.0
+max_retries = 3              # extra attempts after a failed request
+backoff_base_seconds = 5     # waits 5s, 15s, 45s between retries
+timeout_seconds = 30
+
+# Hard limits. A run started sooner than this after the previous one is skipped.
+fast_check_min_interval_minutes = 5
+full_run_min_interval_minutes = 30
+# Windows Task Scheduler can start a job a few seconds early or late. Without this slack,
+# a run every 5:00 could be skipped because the last one "started" 4:58 ago.
+schedule_grace_seconds = 20
+
+[scoring]
+# Discount = (was_price - price) / was_price, written as a fraction (0.70 = 70% off).
+urgent_discount = 1.0     # URGENT: 100% off, or price is R0
+hot_discount = 0.70       # HOT: 70% off or more. Everything else is NORMAL.
+
+# Suspicious was-price checks (deals are flagged, never hidden):
+# the was-price jumped above what this item's was-price used to be...
+was_price_jump_factor = 1.25
+# ...or the was-price is far above any price we've actually seen the item sell for.
+# 5.0 means a was-price more than 5x the highest selling price seen (i.e. over 80% off
+# compared with every price we've recorded). Lower = stricter.
+was_price_vs_seen_price_factor = 5.0
+
+[notifications]
+# Before an URGENT alert, open the product page once to confirm it's still R0/100% off and
+# not sold out. Costs one extra request, only when a new URGENT deal appears.
+confirm_urgent_on_product_page = true
+
+# If more than this many new HOT deals turn up in one run, send one summary push instead
+# of one push each (the first full run after setup can find dozens).
+hot_batch_threshold = 3
+
+[notifications.ntfy]
+# Free phone push. Install the ntfy app and subscribe to your topic.
+# The topic name acts like a password (anyone who knows it can read your pushes), so it
+# lives in .env as NTFY_TOPIC, not here.
+enabled = true
+server = "https://ntfy.sh"
+
+[notifications.email]
+# Gmail works for free with an "app password" (see README). SMTP_USER and SMTP_PASSWORD go in .env.
+enabled = true
+smtp_host = "smtp.gmail.com"
+smtp_port = 587
+to = ["you@example.com"]        # who receives URGENT emails and the daily digest
+digest_size = 15                # deals in the daily digest
+
+[notifications.whatsapp]
+# Optional, off by default. Uses Twilio's WhatsApp sandbox (free trial credit).
+# TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN go in .env.
+enabled = false
+from_number = "whatsapp:+14155238886"   # Twilio sandbox number
+to_number = "whatsapp:+27XXXXXXXXX"     # your number, in international format
+tiers = ["HOT", "URGENT"]
+
+[schedule]
+# Used by `python main.py run`, which Task Scheduler starts every 5 minutes.
+digest_time = "08:00"            # SAST; the digest goes out with the first full run after this
+failure_alert_after = 3          # push an alert after this many failed runs in a row
+keep_fast_snapshots_days = 2     # older fast-check rows are deleted (full runs are kept forever)
+
+[paths]
+data_dir = "data"
+database = "odo_deals.db"   # SQLite file inside data_dir
+log_dir = "logs"            # tracker.log (rotates at 1 MB, keeps 5 old files)

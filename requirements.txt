@@ -1,0 +1,4 @@
+requests>=2.31        # HTTP requests
+charset-normalizer>=3 # text-encoding detection used by requests
+beautifulsoup4>=4.12  # find the embedded JSON <script> tag in HTML pages
+python-dotenv>=1.0    # load secrets from .env
