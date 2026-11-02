@@ -43,7 +43,12 @@ env:
 
 jobs:
   track:
-    if: github.event.schedule != '17 6 * * 1' && inputs.action != 'keepalive'
+    # Scheduled runs only work when the repository variable ODO_ACTIVE is "true"
+    # (Settings -> Secrets and variables -> Actions -> Variables). Otherwise they show up as
+    # "skipped": standby mode, for while the laptop is the one tracking. Never have both on.
+    if: >-
+      github.event.schedule != '17 6 * * 1' && inputs.action != 'keepalive'
+      && (vars.ODO_ACTIVE == 'true' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     # Never run two at once; a run that's triggered meanwhile waits its turn.

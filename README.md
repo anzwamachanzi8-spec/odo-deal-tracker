@@ -159,12 +159,15 @@ Set them from PowerShell without the value ending up anywhere else (it asks you 
 
 **Logs:** Actions tab → a run → "Run the tracker". Each run's log is kept for 90 days.
 
-**Switching between laptop and cloud.** Only one may run at a time.
-- Laptop → cloud: `powershell -ExecutionPolicy Bypass -File scheduler\uninstall_task.ps1`, then
-  push your latest database to the data repo (copy `data\odo_deals.db` and `data\run_state.json`
-  into a clone of `odo-deal-tracker-data`, commit, push), then `gh workflow enable tracker.yml`.
-- Cloud → laptop: `gh workflow disable tracker.yml`, download the data repo's files into
-  `data\`, then install the task again.
+**Switching between laptop and cloud.** Only one may run at a time. The repository variable
+`ODO_ACTIVE` decides whether scheduled cloud runs do anything: anything but `true` = standby
+(the runs still fire, but show as "skipped" and never touch the site).
+- Laptop → cloud: `Disable-ScheduledTask -TaskName "ODO Deal Tracker"`, then push your latest
+  database to the data repo (copy `data\odo_deals.db` and `data\run_state.json` into a clone of
+  `odo-deal-tracker-data`, commit, push), then `gh cache delete --all` (so the cloud uses the
+  laptop's run times) and `gh variable set ODO_ACTIVE --body true`.
+- Cloud → laptop: `gh variable set ODO_ACTIVE --body false`, download the data repo's files
+  into `data\`, then `Enable-ScheduledTask -TaskName "ODO Deal Tracker"`.
 
 ## 5. Changing settings
 
