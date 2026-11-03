@@ -17,8 +17,10 @@
 #   SMTP_USER, SMTP_PASSWORD, EMAIL_TO          optional: email
 #   TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, WHATSAPP_TO   optional: WhatsApp
 #
-# GitHub's schedule is best-effort: runs often start 5-15 minutes late, and some are dropped
-# when GitHub is busy (especially around the start of each hour).
+# GitHub's schedule is best-effort. Measured 2-3 Nov 2026: 50 runs in 22 hours instead of
+# ~270, typical gap 26 min, up to 58 min. So the main trigger is EXTERNAL: cron-job.org calls
+# GitHub's API every 5 minutes to start this workflow with action "scheduled" (see README).
+# Those start within seconds. The schedules below stay as a backup.
 
 name: Tracker
 
@@ -33,7 +35,8 @@ on:
         description: What to do
         type: choice
         default: run
-        options: [run, test-notify, resume, keepalive]
+        options: [run, scheduled, test-notify, resume, keepalive]
+        # scheduled = what cron-job.org sends: like a GitHub schedule, it obeys ODO_ACTIVE
 
 permissions:
   contents: read
@@ -43,12 +46,13 @@ env:
 
 jobs:
   track:
-    # Scheduled runs only work when the repository variable ODO_ACTIVE is "true"
-    # (Settings -> Secrets and variables -> Actions -> Variables). Otherwise they show up as
-    # "skipped": standby mode, for while the laptop is the one tracking. Never have both on.
+    # Scheduled runs (GitHub's schedule, or cron-job.org's "scheduled") only work when the
+    # repository variable ODO_ACTIVE is "true" (Settings -> Secrets and variables -> Actions ->
+    # Variables). Otherwise they show up as "skipped": standby mode, for while the laptop is the
+    # one tracking. Never have both on. Manual runs (run, test-notify, ...) always work.
     if: >-
       github.event.schedule != '17 6 * * 1' && inputs.action != 'keepalive'
-      && (vars.ODO_ACTIVE == 'true' || github.event_name == 'workflow_dispatch')
+      && (vars.ODO_ACTIVE == 'true' || (github.event_name == 'workflow_dispatch' && inputs.action != 'scheduled'))
     runs-on: ubuntu-latest
     timeout-minutes: 10
     # Never run two at once; a run that's triggered meanwhile waits its turn.
@@ -99,7 +103,7 @@ jobs:
 
       - name: Run the tracker
         id: tracker
-        if: github.event_name == 'schedule' || inputs.action == 'run' || inputs.action == 'resume'
+        if: github.event_name == 'schedule' || inputs.action == 'run' || inputs.action == 'scheduled' || inputs.action == 'resume'
         run: python main.py run
 
       # If an earlier step broke (GitHub hiccup, pip install failed...), the tracker never ran,

@@ -140,6 +140,33 @@ change every run (run times, failure count) go in GitHub's cache instead of a co
 Set them from PowerShell without the value ending up anywhere else (it asks you to paste it):
 `gh secret set NTFY_TOPIC`
 
+**The 5-minute trigger (cron-job.org).** GitHub's own schedule turned out far too patchy:
+over 22 hours (2–3 Nov 2026) it started 50 runs instead of ~270, with gaps of up to 58 minutes,
+including a 44-minute hole right after midnight when the new deals go live. So a free external
+scheduler starts the workflow instead. Workflows started through GitHub's API begin within
+seconds. GitHub's schedules stay on as a backup.
+
+1. Create a second fine-grained token (github.com → Settings → Developer settings →
+   Fine-grained tokens): name `odo-cron-trigger`, repository access **only**
+   `odo-deal-tracker`, permission **Actions: Read and write**, nothing else. It can start
+   workflows in the public code repo, and nothing more: it can't read the private data repo or
+   change any code.
+2. At [cron-job.org](https://cron-job.org) (free account) → Create cronjob:
+   - URL: `https://api.github.com/repos/anzwamachanzi8-spec/odo-deal-tracker/actions/workflows/tracker.yml/dispatches`
+   - Schedule: every 5 minutes
+   - Advanced → Request method: `POST`
+   - Advanced → Headers:
+     `Accept: application/vnd.github+json`,
+     `Authorization: Bearer <the token>`,
+     `X-GitHub-Api-Version: 2026-03-10`,
+     `Content-Type: application/json`
+   - Advanced → Request body: `{"ref":"main","inputs":{"action":"scheduled"}}`
+   - Notifications: on failure (so a broken or expired token emails you)
+3. "Test run" should answer with status 200 or 204, and a new "Tracker" run appears on the
+   Actions tab.
+
+These "scheduled" runs obey the `ODO_ACTIVE` switch below, just like GitHub's own schedule.
+
 **Manual actions:** Actions tab → Tracker → Run workflow → pick `run`, `test-notify`
 (send fake alerts), `resume` (after the site blocked the tracker and it paused itself) or
 `keepalive`. Or from PowerShell: `gh workflow run tracker.yml -f action=test-notify`
