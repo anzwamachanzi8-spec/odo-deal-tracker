@@ -106,19 +106,6 @@ jobs:
         if: github.event_name == 'schedule' || inputs.action == 'run' || inputs.action == 'scheduled' || inputs.action == 'resume'
         run: python main.py run
 
-      # If an earlier step broke (GitHub hiccup, pip install failed...), the tracker never ran,
-      # so it couldn't count the failure itself. This counts it, and pushes after 3 in a row.
-      - name: Count a failure outside the tracker
-        if: failure() && steps.tracker.outcome != 'failure'
-        run: python3 scripts/infra_failure.py
-
-      - name: Save the run state to the cache
-        if: always()
-        uses: actions/cache/save@v4
-        with:
-          path: data/run_state.json
-          key: run-state-${{ github.run_id }}
-
       - name: Save the database (only if the run found something new)
         if: always() && hashFiles('data/needs_commit') != ''
         working-directory: data
@@ -131,8 +118,31 @@ jobs:
           git checkout --orphan latest
           git add -A
           git commit -q -m "Data as of $(date -u +%Y-%m-%dT%H:%MZ)"
-          git push -q --force origin latest:main
-          echo "Database saved ($(du -h odo_deals.db | cut -f1))"
+          # GitHub's git servers occasionally answer a push with "Internal Server Error"
+          # (2 of ~350 pushes on 4 Nov 2026), so try a few times before giving up.
+          for attempt in 1 2 3 4; do
+            if git push -q --force origin latest:main; then
+              echo "Database saved ($(du -h odo_deals.db | cut -f1))"
+              exit 0
+            fi
+            echo "Push failed (attempt $attempt of 4); trying again in $((attempt * 15)) seconds"
+            sleep $((attempt * 15))
+          done
+          exit 1
+
+      # If a step other than the tracker broke (GitHub hiccup, pip install failed, saving the
+      # database failed...), the tracker couldn't count the failure itself. This counts it,
+      # and pushes after 3 in a row.
+      - name: Count a failure outside the tracker
+        if: failure() && steps.tracker.outcome != 'failure'
+        run: python3 scripts/infra_failure.py
+
+      - name: Save the run state to the cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: data/run_state.json
+          key: run-state-${{ github.run_id }}
 
   # GitHub disables scheduled workflows in public repos after 60 days without "repository
   # activity", and its docs don't say whether this workflow's own actions count. Two cheap
